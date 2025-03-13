@@ -32,13 +32,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     match cmd {
-        Command::Ping(args) => latency(args).await?,
+        Command::Ping(args) => ping(args).await?,
     }
 
     Ok(())
 }
 
-async fn latency(args: Ping) -> anyhow::Result<()> {
+async fn ping(args: Ping) -> anyhow::Result<()> {
     let url = Uri::from_str(&args.url)?;
 
     let (ws_stream, _) = connect_async(url).await?;
