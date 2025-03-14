@@ -1,4 +1,4 @@
-use std::{str::FromStr, time::Instant};
+use std::time::Instant;
 
 use anyhow::bail;
 use clap::{Args, Parser};
@@ -14,7 +14,7 @@ enum Command {
 
 #[derive(Args)]
 struct Ping {
-    url: String,
+    url: Uri,
     #[arg(short, long, default_value_t = 1)]
     interval: u64,
     #[arg(short, long, default_value_t = 5)]
@@ -39,9 +39,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn ping(args: Ping) -> anyhow::Result<()> {
-    let url = Uri::from_str(&args.url)?;
-
-    let (ws_stream, _) = connect_async(url).await?;
+    let (ws_stream, _) = connect_async(&args.url).await?;
     println!("Connected to {}", args.url);
 
     let (mut write, mut read) = ws_stream.split();
