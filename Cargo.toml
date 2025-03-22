@@ -10,9 +10,9 @@ repository = "https://github.com/discosultan/wst"
 
 [dependencies]
 anyhow = "1"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 futures-util = "0.3"
 http = "1"
-rustls = { version = "0.23.23", features = ["ring"] }
+rustls = { version = "0.23", features = ["ring"] }
 tokio = { version = "1.0", features = ["full"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
