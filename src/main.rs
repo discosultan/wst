@@ -1,15 +1,23 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::bail;
 use clap::{Args, Parser};
 use futures_util::{SinkExt, StreamExt};
 use http::Uri;
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use tokio::time::interval;
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{
+        handshake::client::{Request, generate_key},
+        protocol::Message,
+    },
+};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 enum Command {
     Ping(Ping),
+    Compression(Compression),
 }
 
 #[derive(Args)]
@@ -19,6 +27,11 @@ struct Ping {
     interval: u64,
     #[arg(short, long, default_value_t = 5)]
     count: u32,
+}
+
+#[derive(Args)]
+struct Compression {
+    url: Uri,
 }
 
 #[tokio::main]
@@ -33,52 +46,87 @@ async fn main() -> anyhow::Result<()> {
 
     match cmd {
         Command::Ping(args) => ping(args).await?,
+        Command::Compression(args) => compression(args).await?,
     }
 
     Ok(())
 }
 
 async fn ping(args: Ping) -> anyhow::Result<()> {
-    let (ws_stream, _) = connect_async(&args.url).await?;
+    let (mut ws, _) = connect_async(&args.url).await?;
     println!("Connected to {}", args.url);
 
-    let (mut write, mut read) = ws_stream.split();
     let mut latencies = Vec::new();
+    let mut interval = interval(Duration::from_secs(args.interval));
 
     for i in 1..=args.count {
+        interval.tick().await;
         let sent_time = Instant::now();
-        write.send(Message::Ping(vec![i as u8].into())).await?;
+        ws.send(Message::Ping(vec![(i % 256) as u8].into())).await?;
 
-        while let Some(msg) = read.next().await {
+        while let Some(msg) = ws.next().await {
             match msg {
                 Ok(Message::Pong(_)) => {
-                    let latency_ms = sent_time.elapsed().as_micros() as f64 / 1000.0;
-                    println!("Ping {}/{} - Latency: {} ms", i, args.count, latency_ms);
-                    latencies.push(latency_ms);
+                    let latency = sent_time.elapsed();
+                    latencies.push(latency);
+                    println!(
+                        "Ping {}/{} - Latency: {} ms",
+                        i,
+                        args.count,
+                        latency.as_micros() as f64 / 1000.0
+                    );
                     break;
                 }
                 Ok(_) => continue,
                 Err(e) => return Err(e.into()),
             }
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(args.interval)).await;
     }
 
-    write.send(Message::Close(None)).await?;
+    ws.send(Message::Close(None)).await?;
+    println!("Connection closed");
+
     if !latencies.is_empty() {
-        let avg = latencies.iter().sum::<f64>() / latencies.len() as f64;
-        let min = latencies.iter().copied().fold(f64::INFINITY, f64::min);
-        let max = latencies.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let sum: Duration = latencies.iter().sum();
+        let avg = sum / latencies.len() as u32;
+        let min = latencies.iter().copied().min().unwrap_or_default();
+        let max = latencies.iter().copied().max().unwrap_or_default();
         println!("--- {} ping statistics ---", args.url);
         println!(
             "{} pings sent, Min/Avg/Max = {:.2}/{:.2}/{:.2} ms",
             latencies.len(),
-            min,
-            avg,
-            max
+            min.as_micros() as f64 / 1000.0,
+            avg.as_micros() as f64 / 1000.0,
+            max.as_micros() as f64 / 1000.0,
         );
     }
+
+    Ok(())
+}
+
+async fn compression(args: Compression) -> anyhow::Result<()> {
+    let request = Request::builder()
+        .uri(&args.url)
+        .header("Host", args.url.host().unwrap_or("localhost"))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", generate_key())
+        // Request the permessage-deflate extension.
+        .header("Sec-WebSocket-Extensions", "permessage-deflate")
+        .body(())?;
+
+    let (mut ws, response) = connect_async(request).await?;
+    println!("Connected to {}", args.url);
+
+    ws.send(Message::Close(None)).await?;
     println!("Connection closed");
+
+    if let Some(extensions) = response.headers().get("Sec-WebSocket-Extensions") {
+        println!("Extensions: {extensions:?}");
+    } else {
+        println!("No extensions in response");
+    }
 
     Ok(())
 }
