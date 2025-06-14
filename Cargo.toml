@@ -15,4 +15,4 @@ futures-util = "0.3"
 http = "1"
 rustls = { version = "0.23", features = ["ring"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.27", features = ["rustls-tls-webpki-roots"] }
