@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use anyhow::bail;
 use clap::{Args, Parser};
 use futures_util::{SinkExt, StreamExt};
 use http::Uri;
@@ -36,20 +35,10 @@ struct Compression {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cmd = Command::parse();
-    if rustls::crypto::ring::default_provider()
-        .install_default()
-        .is_err()
-    {
-        bail!("Failed to install rustls crypto provider")
+    match Command::parse() {
+        Command::Ping(args) => ping(args).await,
+        Command::Compression(args) => compression(args).await,
     }
-
-    match cmd {
-        Command::Ping(args) => ping(args).await?,
-        Command::Compression(args) => compression(args).await?,
-    }
-
-    Ok(())
 }
 
 async fn ping(args: Ping) -> anyhow::Result<()> {
