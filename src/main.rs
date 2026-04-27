@@ -3,9 +3,12 @@ use std::time::{Duration, Instant};
 use clap::{Args, Parser};
 use futures_util::{SinkExt, StreamExt};
 use http::Uri;
-use tokio::time::{interval, timeout};
+use tokio::{
+    net::TcpStream,
+    time::{interval, timeout},
+};
 use tokio_tungstenite::{
-    connect_async,
+    MaybeTlsStream, WebSocketStream, connect_async,
     tungstenite::{
         self,
         handshake::client::{Request, generate_key},
@@ -54,13 +57,16 @@ async fn ping(args: Ping) -> anyhow::Result<()> {
 
     for i in 1..=args.count {
         interval.tick().await;
+        let payload = i.to_be_bytes();
         let sent_time = Instant::now();
-        ws.send(Message::Ping(vec![(i % 256) as u8].into())).await?;
+        ws.send(Message::Ping(payload.to_vec().into())).await?;
 
         let pong = timeout(pong_timeout, async {
             while let Some(msg) = ws.next().await {
                 match msg {
-                    Ok(Message::Pong(_)) => return Ok(sent_time.elapsed()),
+                    Ok(Message::Pong(p)) if p.as_ref() == payload => {
+                        return Ok(sent_time.elapsed());
+                    }
                     Ok(_) => continue,
                     Err(e) => return Err(e),
                 }
@@ -79,14 +85,14 @@ async fn ping(args: Ping) -> anyhow::Result<()> {
         }
     }
 
-    ws.send(Message::Close(None)).await?;
+    close(&mut ws).await?;
     println!("Connection closed");
 
     if !latencies.is_empty() {
         let sum: Duration = latencies.iter().sum();
         let avg = sum / latencies.len() as u32;
-        let min = latencies.iter().copied().min().unwrap_or_default();
-        let max = latencies.iter().copied().max().unwrap_or_default();
+        let min = latencies.iter().copied().min().unwrap();
+        let max = latencies.iter().copied().max().unwrap();
         println!("--- {} ping statistics ---", args.url);
         println!(
             "{} pings sent, Min/Avg/Max = {:.2}/{:.2}/{:.2} ms",
@@ -104,10 +110,26 @@ fn ms(d: Duration) -> f64 {
     d.as_micros() as f64 / 1000.0
 }
 
+async fn close(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> tungstenite::Result<()> {
+    ws.send(Message::Close(None)).await?;
+    // Drain until the server's close ack ends the stream, bounded so a
+    // misbehaving peer can't hang shutdown.
+    let _ = timeout(Duration::from_secs(5), async {
+        while ws.next().await.is_some() {}
+    })
+    .await;
+    Ok(())
+}
+
 async fn compression(args: Compression) -> anyhow::Result<()> {
+    let host = args
+        .url
+        .authority()
+        .map(|a| a.as_str())
+        .unwrap_or("localhost");
     let request = Request::builder()
         .uri(&args.url)
-        .header("Host", args.url.host().unwrap_or("localhost"))
+        .header("Host", host)
         .header("Connection", "Upgrade")
         .header("Upgrade", "websocket")
         .header("Sec-WebSocket-Version", "13")
@@ -119,13 +141,25 @@ async fn compression(args: Compression) -> anyhow::Result<()> {
     let (mut ws, response) = connect_async(request).await?;
     println!("Connected to {}", args.url);
 
-    ws.send(Message::Close(None)).await?;
+    close(&mut ws).await?;
     println!("Connection closed");
 
-    if let Some(extensions) = response.headers().get("Sec-WebSocket-Extensions") {
-        println!("Extensions: {extensions:?}");
-    } else {
-        println!("No extensions in response");
+    match response.headers().get("Sec-WebSocket-Extensions") {
+        Some(extensions) => {
+            let value = extensions.to_str().unwrap_or("");
+            let deflate = value.split(',').any(|ext| {
+                ext.trim().split(';').next().unwrap_or("").trim() == "permessage-deflate"
+            });
+            println!("Extensions: {value}");
+            println!(
+                "Compression: {}",
+                if deflate { "enabled" } else { "disabled" },
+            );
+        }
+        None => {
+            println!("No extensions in response");
+            println!("Compression: disabled");
+        }
     }
 
     Ok(())
